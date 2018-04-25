@@ -14,79 +14,205 @@ namespace MCODE_Classification
 {
     public partial class MCODE : Form
     {
+        private DataTable dt { get; set; }
         public MCODE()
         {
             InitializeComponent();
+            dt = new DataTable();
         }
+        private void MCODE_Load(object sender, EventArgs e)
+        {
+            // If folder doesn't exists create.
+            System.IO.Directory.CreateDirectory("Training");
+            System.IO.Directory.CreateDirectory("Testing");
+            System.IO.Directory.CreateDirectory("Merged");
+        }
+        private void resultOutput_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.ColumnIndex == 4 && e.RowIndex >= 0)
+            {
+                resultOutput.CommitEdit(DataGridViewDataErrorContexts.Commit);
 
+                //Check the value of cell
+                if ((bool)resultOutput.CurrentCell.Value == true)
+                {
+                    resultOutput.Rows[e.RowIndex].DefaultCellStyle.ForeColor = Color.Green;
+                }
+                else
+                {
+                    resultOutput.Rows[e.RowIndex].DefaultCellStyle.ForeColor = Color.Gray;
+                }
+            }
+        }
         private void btnPredict_Click(object sender, EventArgs e)
         {
-            btnPredict.Enabled = false;
-            if(testCsv.Text.Length==0)
+            DisableAllButtons();
+
+            resultOutput.Rows.Clear();
+            dt.Columns.Clear();
+            dt.Rows.Clear();
+            //  get all lines of csv file
+            string[] str = File.ReadAllLines(testCsv.Text);
+
+            // get the column header means first line
+            string[] temp = str[0].Split(',');
+
+            // creates columns of gridview as per the header name
+            foreach (string t in temp)
             {
-                btnPredict.Enabled = true;
-                MessageBox.Show("Test csv name missing!!!");
-                return;
+                dt.Columns.Add(t, typeof(string));
             }
-            List<string> IDs = new List<string>();
-            try
+
+            List<string> identifications = new List<string>();
+            // now retrive the record from second line and add it to datatable
+            for (int i = 1; i < str.Length; i++)
             {
-                resultOutput.Rows.Clear();
-                using (StreamReader sr = new StreamReader(testCsv.Text))
+                string[] t = str[i].Split(',');
+                dt.Rows.Add(t);
+                if ("0" == dt.Rows[i - 1]["Verified"].ToString())
+                    identifications.Add(dt.Rows[i - 1]["CatalogID"].ToString() + "," + dt.Rows[i - 1]["ID"].ToString() + "," + dt.Rows[i - 1]["Verified"].ToString());
+
+            }
+
+            List<string> arguments = new List<string>();
+            arguments.Add("\"./Merged/combined.csv\"");
+
+            String output = ExecutePython("Classify.py", arguments, true);
+
+            string[] r = output.Split(new char[] { ',' });
+
+            for (int i = 0; i < r.Length; ++i)
+            {
+                string Type = "";
+                if (r[i].IndexOf(']') != -1)
                 {
-                    String line;
-                    while ((line = sr.ReadLine()) != null)
-                    {
-                        string[] parts = line.Split(',');
-
-                        string orderId = parts[1];
-                        IDs.Add(orderId);
-
-                    }
+                    Type = r[i].Remove(r[i].IndexOf(']'), 1);
                 }
-
-                Process p = new Process(); // create process (i.e., the python program
-                p.StartInfo.FileName = "python.exe";
-                p.StartInfo.RedirectStandardOutput = true;
-                p.StartInfo.UseShellExecute = false; // make sure we can read the output from stdout
-                p.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
-                p.StartInfo.Arguments = "Classification_onmergerdata.py " + "\"./" + testCsv.Text + "\"";
-                p.StartInfo.CreateNoWindow = true;
-                p.Start(); // start the process (the python program)
-                StreamReader s = p.StandardOutput;
-                String output = s.ReadToEnd();
-                string[] r = output.Split(new char[] { ',' }); // get the parameter
-
-                for (int i = 0; i < r.Length; ++i)
+                else if (r[i].IndexOf('[') != -1)
                 {
-                    string Type = "";
+                    Type = r[i].Remove(r[i].IndexOf('['), 1);
+                }
+                else
+                    Type = r[i];
 
-                    int index1 = r[i].IndexOf(']');
-                    if (index1 != -1)
-                    {
-                        Type = r[i].Remove(index1, 1);
-                    }
+                string type = GetGroupType(int.Parse(Type));
+                string[] t = identifications[i].Split(',');
 
-                    else if (r[i].IndexOf('[') != -1)
+                DataGridViewComboBoxCell combo = new DataGridViewComboBoxCell();
+                resultOutput.Rows.Add((i + 1).ToString(), t[0], t[1], type);
+            }
+
+            EnableAllButtons();
+        }
+        private void btnMergeBoth_Click(object sender, EventArgs e)
+        {
+            DisableAllButtons();
+            resultOutput.Rows.Clear();
+            MergeTraining();
+            MergeTesting();
+            
+            //Merge Both
+            List<string> arguments = new List<string>();
+            arguments.Add("\"./Merged/*.csv\"");
+            ExecutePython("MergeCSV.py", arguments);
+            EnableAllButtons();
+        }
+        private void btnConfirm_Click(object sender, EventArgs e)
+        {
+            if (resultOutput.Rows.Count != 0)
+            {
+                DisableAllButtons();
+
+                foreach (DataGridViewRow row in resultOutput.Rows)
+                {
+                    bool val = false;
+
+                    if (null != row.Cells["verified"].Value)
                     {
-                        Type = r[i].Remove(r[i].IndexOf('['), 1);
+                        val = (bool)row.Cells["verified"].Value;
+                        dt.Rows[row.Index]["verified"] = val == true ? "1":"0" ;
+                        dt.Rows[row.Index]["Group"] = row.Cells["group"].Value.ToString();
                     }
                     else
-                        Type = r[i];
+                    {
+                        DataGridViewComboBoxCell cbCell = (DataGridViewComboBoxCell)row.Cells["Correction"];
+                        if (cbCell.Selected)
+                        {
+                            dt.Rows[row.Index]["verified"] = "1";
+                            dt.Rows[row.Index]["Group"] = cbCell.Value.ToString();
+                        }
+                    }
+                }
+                string csvData = DataTableToCSV(dt);
 
-                    string type = GetGroupType(int.Parse(Type));
+                StreamWriter myStream = new StreamWriter("./Merged/combined.csv", false);
+                myStream.Write(csvData);
+                myStream.Close();
+                resultOutput.Rows.Clear();
+                EnableAllButtons();
+            }
 
-                    resultOutput.Rows.Add((i + 1).ToString(), IDs[i + 1], type);
+        }
+        private String ExecutePython(string pythonScriptName, List<string> args, bool bReturnOutput = false)
+        {
+            String returnOutput = "";
+            try
+            {
+                //Create process
+                Process p = new Process();
+                p.StartInfo.FileName = "python.exe";
+                p.StartInfo.RedirectStandardOutput = true;
+
+                // make sure we can read the output from stdout
+                p.StartInfo.UseShellExecute = false;
+
+                p.StartInfo.CreateNoWindow = true;
+
+                p.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
+
+                string arguments = "";
+                foreach (string str in args)
+                    arguments += " " + str;
+
+                p.StartInfo.Arguments = pythonScriptName + " " + arguments;
+
+                p.Start(); // start the process (the python program)
+
+                if (bReturnOutput)
+                {
+                    StreamReader s = p.StandardOutput;
+                    String output = s.ReadToEnd();
+                    returnOutput = output;
                 }
                 p.WaitForExit();
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
-            finally { btnPredict.Enabled = true; }
-        }
+            catch (Exception ex) { MessageBox.Show(ex.Message); }
 
+            return returnOutput;
+        }
+        private string DataTableToCSV(DataTable datatable, char seperator = ',')
+        {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < datatable.Columns.Count; i++)
+            {
+                sb.Append(datatable.Columns[i]);
+                if (i < datatable.Columns.Count - 1)
+                    sb.Append(seperator);
+            }
+            sb.AppendLine();
+            foreach (DataRow dr in datatable.Rows)
+            {
+                for (int i = 0; i < datatable.Columns.Count; i++)
+                {
+                    sb.Append(dr[i].ToString());
+
+                    if (i < datatable.Columns.Count - 1)
+                        sb.Append(seperator);
+                }
+                sb.AppendLine();
+            }
+            return sb.ToString();
+        }
         private string GetGroupType(int i)
         {
             string type = "none";
@@ -95,76 +221,113 @@ namespace MCODE_Classification
             {
                 case 0:
                     type = "Fabric";
-            break;
+                    break;
                 case 1:
                     type = "Glass";
-            break;
+                    break;
                 case 2:
                     type = "Laminate";
-            break;
+                    break;
                 case 3:
                     type = "Leather";
-            break;
+                    break;
                 case 4:
                     type = "Metal";
-            break;
+                    break;
                 case 5:
                     type = "Mineral";
-            break;
+                    break;
                 case 6:
                     type = "Paint";
-            break;
+                    break;
                 case 7:
                     type = "Plastic";
-            break;
+                    break;
                 case 8:
                     type = "Wood";
-            break;
+                    break;
                 case 9:
                     type = "Emitter";
-            break;
+                    break;
                 case 10:
-                type = "Miscellaneous";
-            break;
+                    type = "Miscellaneous";
+                    break;
                 case 11:
                     type = "SolidSurface";
-            break;
+                    break;
                 case 12:
                     type = "Carpet";
-            break;
+                    break;
                 case 13:
                     type = "Wallpaper";
                     break;
                 default:
                     type = "none";
-            break;
+                    break;
 
-        }
+            }
             return type;
         }
-
-        private void btnTrain_Click(object sender, EventArgs e)
+        private void MergeTraining()
         {
-            try
+            List<string> arguments = new List<string>();
+            arguments.Add("\"./Training/*.csv\"");
+            arguments.Add(" \"1\"");
+            arguments.Add("\"./Merged/combined_train.csv\"");
+            ExecutePython("MergeCSV.py", arguments);
+        }
+        private void MergeTesting()
+        {
+            List<string> arguments = new List<string>();
+            arguments.Add("\"./Testing/*.csv\"");
+            arguments.Add(" \"0\"");
+            arguments.Add("\"./Merged/combined_test.csv\"");
+            ExecutePython("MergeCSV.py", arguments);
+        }
+        private void DisableAllButtons()
+        {
+            Cursor.Current = Cursors.WaitCursor;
+            btnPredict.Enabled = false;
+            btnConfirm.Enabled = false;
+            btnCombineData.Enabled = false;
+        }
+        private void EnableAllButtons()
+        {
+            btnPredict.Enabled = true;
+            btnConfirm.Enabled = true;
+            btnCombineData.Enabled = true;
+            Cursor.Current = Cursors.Default;
+
+        }
+
+        private void resultOutput_DataError(object sender, DataGridViewDataErrorEventArgs anError)
+        {
+            MessageBox.Show("Error happened " + anError.Context.ToString());
+
+            if (anError.Context == DataGridViewDataErrorContexts.Commit)
             {
-                btnTrain.Enabled = false;
-                Process p = new Process(); // create process (i.e., the python program
-                p.StartInfo.FileName = "python.exe";
-                p.StartInfo.RedirectStandardOutput = true;
-                p.StartInfo.UseShellExecute = false; // make sure we can read the output from stdout
-                p.StartInfo.CreateNoWindow = true;
-                p.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
-                p.StartInfo.Arguments = "MergeCSV.py " + "\"./Training/*.csv\"";
-                p.Start(); // start the process (the python program)
-                p.WaitForExit();
+                MessageBox.Show("Commit error");
             }
-            catch (Exception ex)
+            if (anError.Context == DataGridViewDataErrorContexts.CurrentCellChange)
             {
-                MessageBox.Show(ex.Message);
+                MessageBox.Show("Cell change");
             }
-            finally
+            if (anError.Context == DataGridViewDataErrorContexts.Parsing)
             {
-                btnTrain.Enabled = true;
+                MessageBox.Show("parsing error");
+            }
+            if (anError.Context == DataGridViewDataErrorContexts.LeaveControl)
+            {
+                MessageBox.Show("leave control error");
+            }
+
+            if ((anError.Exception) is ConstraintException)
+            {
+                DataGridView view = (DataGridView)sender;
+                view.Rows[anError.RowIndex].ErrorText = "an error";
+                view.Rows[anError.RowIndex].Cells[anError.ColumnIndex].ErrorText = "an error";
+
+                anError.ThrowException = false;
             }
         }
     }
